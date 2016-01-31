@@ -1,0 +1,340 @@
+---
+title: "HAR Project"
+author: "Shawnzoom"
+date: "January 26, 2016"
+output: html_document
+---
+```{r "setOptions", echo=FALSE}
+library(knitr, quietly = TRUE)
+opts_chunk$set(echo = TRUE, eval= TRUE , results = "markup", warning = FALSE, message = FALSE, highligh = TRUE)
+
+# load libraries 
+library(dplyr, quietly = TRUE)
+library(caret, quietly = TRUE)
+library(YaleToolkit, quietly = TRUE)
+library(parallel, quietly = TRUE)
+library(doParallel, quietly = TRUE)
+library(iterators, quietly = TRUE)
+library(foreach, quietly = TRUE)
+
+# Set the assignment working directory
+project_dir <- setwd("e:/rcode/chap08")
+```
+
+## Using Sensor Data to Classify how well an Exercise Activity is Performed
+
+## Synopsis
+
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. In this project, the goal was to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants, to classify how well an activity was performed. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways.The "raw" data had 19622 observations and 160 features. After data exploration and cleansing, the data was split into training and test set, and the feature count was reduce to 40. The training data was then fitted to a Random Forest model using 5-fold cross validation. The model was then used to the classe variable in the test set and to answer the 20 quiz questions. The model correctlt classified the 20 quiz questions.
+
+## Question
+
+The data analyis in this report sets out to answer the following question. 
+
+> Is is possible to classify the manner in in which a dumbbel execise was performed using sensor data from a glove, belt, arm-band and dumbbell?
+
+## Data
+The training data for this project are available [here][1]:
+
+The test data are available [here][2]:
+
+The data for this project comes from [this source][3]: 
+
+**Citation:**
+This report is based on data from the following paper:
+
+Velloso, E.; Bulling, A.; Gellersen, H.; Ugulino, W.; Fuks, H. Qualitative Activity Recognition of Weight Lifting Exercises. Proceedings of 4th International Conference in Cooperation with SIGCHI (Augmented Human '13) . Stuttgart, Germany: ACM SIGCHI, 2013.
+
+Read more [here][4] 
+
+[1]: https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv "training data"
+[2]: https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv "test data"
+[3]: http://groupware.les.inf.puc-rio.br/har. "human activity recognition"
+[4]: http://groupware.les.inf.puc-rio.br/har#ixzz3yMYJpJMN "academic paper"
+
+## Assignment setup
+The dataset has been placed in the directory `e:/rcode/chap08`
+```{r}
+# Set the assignment working directory
+project_dir <- setwd("e:/rcode/chap08")
+```
+
+### Libraries used in analysis
+```{r}
+# load libraries 
+library(dplyr, quietly = TRUE)
+library(caret, quietly = TRUE)
+library(YaleToolkit, quietly = TRUE)
+library(parallel, quietly = TRUE)
+library(doParallel)
+library(iterators)
+library(foreach)
+```
+## Data Processing
+
+This section describes (in words and code) how the data were loaded into R and processed for analysis. In particular, this shows how the analysis starts with a raw CSV file containing the data. 
+
+### Preliminary data exploration 
+
+> Read the first 5 rows and examine the data as it relates to the question
+
+```{r results='hide'}
+# Perform initial exploration
+
+# Peek at frist 5 rows and find class of data
+peek5.train <- read.table("pml-training.csv",  sep = ",", nrows = 5, header = TRUE)
+
+# examine variables
+str(peek5.train)
+
+# Peek at frist 5 rows and find class of data
+peek5.test <- read.table("pml-testing.csv",  sep = ",", nrows = 5, header = TRUE)
+
+# examine variables
+str(peek5.test)
+```
+
+> Load all data
+
+### Load all data
+```{r}
+# read data file
+har.all <- read.table("pml-training.csv", sep = ",", header = TRUE, na.strings = "NA", stringsAsFactors = FALSE)
+
+dim(har.all)
+
+har.quiz <- read.table("pml-testing.csv", sep = ",", header = TRUE, na.strings = "NA", stringsAsFactors = FALSE)
+
+dim(har.quiz)
+
+```
+
+Use the whatis() function from the YaleToolKit to get additional perspective and insight on the data. Writing the data to a csv file and then browsing the data with Excel proved to be very useful.
+
+```{r}
+var_explore_all <- whatis(har.all)
+
+# create file var_exploration.csv 
+write.table(var_explore_all, file = "var_explore_all.csv", sep = ",", row.names = FALSE, col.names = TRUE, append = FALSE)
+
+var_explore_quiz <- whatis(har.quiz)
+
+# create file var_exploration.csv 
+write.table(var_explore_quiz, file = "var_explore_quiz.csv", sep = ",", row.names = FALSE, col.names = TRUE, append = FALSE)
+
+```
+
+### Feature Extraction and Selection
+
+1. Based on data exploration, there are 19622 observations across 160 variables in the har.all. However, reviewing the csv created from var-exploration_all, 67 of the variables all have 19216 missing values. For this reason, all of these variables will not be considered for the model
+
+2. Based on **Section 5.1 Feature Extraction and Selection** from [the research paper][5] , the following variables do not appear to have any roll in building the classification model: new_window, raw_timestamp_part1, raw_timestamp_part2, cvtd_timestamp, user_name, and V1. These variables will also not be considered for the model. 
+
+3. Additionally, Section 5.1 Feature Extraction and Selection makes no mention of using an of the kurtois, or skewness variables. These variables will also not be considered for the model.
+
+To further help with feature selection, for a given sensor, the following additional assumptions were made from reading Section 5.1 Feature Extraction and Selection:
+
+#### Additional assumptions
+- Gyro, implies pitch, roll and yaw in the variable names
+- magnetometer, implies magnet in the variable names
+- range, implies amplitude 
+- If gyro was mentioned as being used, all the raw variables for that sensor were included. For example, for the belt, it says "variance of the gyro" and therefore pitch, roll and yaw variables are included for that sensor
+- If magnetometer was mentioned as being used, the x, y, and z magnet variables for that sensor were included in the model
+
+[5]: http://groupware.les.inf.puc-rio.br/work.jsf?p1=11201 "research paper"
+## Data Prep and Cleaning
+
+From the data exploration, it can be seen that some variables need to have there data types coerced. For example, character to numeric and logical to numeric. 
+
+```{r}
+# convert classes
+
+har.all$classe <- as.factor(har.all$classe)
+har.all$max_yaw_belt <- as.numeric(har.all$max_yaw_belt)
+har.quiz$avg_roll_belt <- as.numeric(har.quiz$avg_roll_belt)
+har.quiz$var_roll_belt <- as.numeric(har.quiz$var_roll_belt)
+har.quiz$var_total_accel_belt <- as.numeric(har.quiz$var_total_accel_belt)
+har.quiz$max_roll_belt <- as.numeric(har.quiz$max_roll_belt)
+har.quiz$min_roll_belt <- as.numeric(har.quiz$min_roll_belt)
+har.quiz$max_picth_belt <- as.numeric(har.quiz$max_picth_belt)
+har.quiz$amplitude_pitch_belt <- as.numeric(har.quiz$amplitude_pitch_belt)
+har.quiz$var_accel_arm <- as.numeric(har.quiz$var_accel_arm)
+har.quiz$var_pitch_dumbbell <- as.numeric(har.quiz$var_pitch_dumbbell)
+har.quiz$var_roll_dumbbell <- as.numeric(har.quiz$var_roll_dumbbell)
+har.quiz$var_yaw_dumbbell <- as.numeric(har.quiz$var_yaw_dumbbell)
+har.quiz$amplitude_roll_dumbbell <- as.numeric(har.quiz$amplitude_roll_dumbbell)
+
+#dumbell
+har.quiz$min_pitch_dumbbell <- as.numeric(har.quiz$min_pitch_dumbbell)
+har.quiz$min_roll_dumbbell <- as.numeric(har.quiz$min_roll_dumbbell)
+har.quiz$min_yaw_dumbbell <- as.numeric(har.quiz$min_yaw_dumbbell)
+har.quiz$max_picth_dumbbell <- as.numeric(har.quiz$max_picth_dumbbell)
+har.quiz$max_roll_dumbbell <- as.numeric(har.quiz$max_roll_dumbbell)
+har.quiz$max_yaw_dumbbell <- as.numeric(har.quiz$max_yaw_dumbbell)
+
+#arm
+har.quiz$min_pitch_arm <- as.numeric(har.quiz$min_pitch_arm)
+har.quiz$min_roll_arm <- as.numeric(har.quiz$min_roll_arm)
+har.quiz$min_yaw_arm <- as.numeric(har.quiz$min_yaw_arm)
+har.quiz$max_picth_arm <- as.numeric(har.quiz$max_picth_arm)
+har.quiz$max_roll_arm <- as.numeric(har.quiz$max_roll_arm)
+har.quiz$max_yaw_arm <- as.numeric(har.quiz$max_yaw_arm)
+
+#belt
+har.quiz$min_pitch_belt <- as.numeric(har.quiz$min_pitch_belt)
+har.quiz$min_roll_belt <- as.numeric(har.quiz$min_roll_belt)
+har.quiz$min_yaw_belt <- as.numeric(har.quiz$min_yaw_belt)
+har.quiz$max_picth_belt <- as.numeric(har.quiz$max_picth_belt)
+har.quiz$max_roll_belt <- as.numeric(har.quiz$max_roll_belt)
+har.quiz$max_yaw_belt <- as.numeric(har.quiz$max_yaw_belt)
+
+#forearm
+har.quiz$min_pitch_forearm <- as.numeric(har.quiz$min_pitch_forearm)
+har.quiz$min_roll_forearm <- as.numeric(har.quiz$min_roll_forearm)
+har.quiz$min_yaw_forearm <- as.numeric(har.quiz$min_yaw_forearm)
+har.quiz$max_picth_forearm <- as.numeric(har.quiz$max_picth_forearm)
+har.quiz$max_roll_forearm <- as.numeric(har.quiz$max_roll_forearm)
+har.quiz$max_yaw_forearm <- as.numeric(har.quiz$max_yaw_forearm)
+
+# amplitude train
+har.all$amplitude_yaw_arm <- as.numeric(har.all$amplitude_yaw_arm)
+har.all$amplitude_yaw_belt <- as.numeric(har.all$amplitude_yaw_belt)
+har.all$amplitude_yaw_forearm <- as.numeric(har.all$amplitude_yaw_forearm)
+
+# amplitude test
+har.quiz$amplitude_yaw_arm <- as.numeric(har.quiz$amplitude_yaw_arm)
+har.quiz$amplitude_yaw_belt <- as.numeric(har.quiz$amplitude_yaw_belt)
+har.quiz$amplitude_yaw_forearm <- as.numeric(har.quiz$amplitude_yaw_forearm)
+
+# train yaw 
+har.all$max_yaw_belt <- as.numeric(har.all$max_yaw_belt)
+har.all$max_yaw_dumbbell <- as.numeric(har.all$max_yaw_dumbbell)
+har.all$max_yaw_forearm <- as.numeric(har.all$max_yaw_forearm)
+har.all$min_yaw_belt <- as.numeric(har.all$min_yaw_belt)
+har.all$min_yaw_dumbbell <- as.numeric(har.all$min_yaw_dumbbell)
+har.all$min_yaw_forearm <- as.numeric(har.all$min_yaw_forearm)
+```
+
+### Creating the training and test datasets
+
+Even though the this assignment implies a specific training and test dataset, this analysis report partitions the data differently. For this report, the original test dataset is being used solely for the answering the quiz questions and is called har.quiz.
+
+The original training dataset has been renamed to har.all. har.har.all is further devided into a new train and test dataset, har.train and har.test, respectively.
+
+```{r}
+# create a training and test data set from the har.all data
+set.seed(3465)
+inTrain <- createDataPartition(y = har.all$classe, p=0.75, list=FALSE)
+
+har.train <- har.all[inTrain,]
+har.test <- har.all[-inTrain,]
+
+```
+
+## Model Computation
+
+```{r cache = TRUE}
+# create a vector of variables bases on defined feature selection criteria
+har.train.tmp <- select(har.train,
+                        classe,
+                        roll_belt,
+                        pitch_belt,
+                        yaw_belt,
+                        total_accel_belt,
+                        gyros_belt_x,
+                        gyros_belt_y,
+                        gyros_belt_z,
+                        accel_belt_x,
+                        accel_belt_y,
+                        accel_belt_z,
+                        magnet_belt_x,
+                        magnet_belt_y,
+                        magnet_belt_z,
+                        gyros_forearm_x,
+                        gyros_forearm_y,
+                        gyros_forearm_z,
+                        accel_forearm_x,
+                        accel_forearm_y,
+                        accel_forearm_z,
+                        magnet_forearm_x,
+                        magnet_forearm_y,
+                        magnet_forearm_z,
+                        gyros_arm_x,
+                        gyros_arm_y,
+                        gyros_arm_z,
+                        accel_arm_x,
+                        accel_arm_y,
+                        accel_arm_z,
+                        magnet_arm_x,
+                        magnet_arm_y,
+                        magnet_arm_z,
+                        gyros_dumbbell_x,
+                        gyros_dumbbell_y,
+                        gyros_dumbbell_z,
+                        accel_dumbbell_x,
+                        accel_dumbbell_y,
+                        accel_dumbbell_z,
+                        magnet_dumbbell_x,
+                        magnet_dumbbell_y,
+                        magnet_dumbbell_z
+                        )
+
+# Citation:
+# Information on how to improve performance of Random Forest in caret came from teh folling:  https://github.com/lgreski/datasciencectacontent/blob/master/markdown/pml-randomForestPerformance.md
+
+# setup and register cluster
+cluster <- makeCluster(detectCores() - 1) # convention to leave 1 core for OS
+registerDoParallel(cluster)
+
+# configure train control parameters to include cross validation parallel computation
+fitControl <- trainControl(method = "cv",
+                           number = 5,
+                           allowParallel = TRUE)
+
+# train the model
+modFit2 <- train(classe ~ .,method="rf", trControl = fitControl ,data=har.train.tmp)
+
+# shutdown the cluster
+stopCluster(cluster)
+```
+
+## Results and Analysis
+Show model results and use the model to predict the classe variable on the test data.
+
+```{r}
+# Show model results
+modFit2
+
+# use model to predict the classe variable on the test data
+pred.modFit2.test <- predict(modFit2, newdata = har.test)
+
+# generate confusion matraix and estimate of out-of-sample error
+conf.matrix.test <- confusionMatrix(data = pred.modFit2.test, har.test$classe)
+conf.matrix.test
+```
+
+> Model has an overall accuracy of `r conf.matrix.test$overall[1]`
+
+### What are the most important variables in the model?
+```{r}
+modFit2.importance <- as.data.frame(modFit2$finalModel$importance)
+
+# move row names to a new column
+modFit2.importance$new <- rownames(modFit2.importance)
+rownames(modFit2.importance) <- NULL
+
+modFit2.importance <- arrange(modFit2.importance, desc(MeanDecreaseGini))
+modFit2.importance
+```
+
+> Use model to predict quiz answers
+
+```{r}
+pred.modFit2.quiz <- predict(modFit2, newdata = har.quiz)
+pred.modFit2.quiz
+```
+## Conclusion
+This report showed how a dataset without a code book could be explored and analyzed to build a model to classify how an activity was performed. The model used 5-flod cross validation and showed out-of-sample accuracy/error on the test data. Also, the model correctly classified the 20 quiz questions.
+
+However, this model would not generalize well as (1) the the HAR experiment was carried out in a very controlled environment. (2) There were not enough participants in the study.
+
